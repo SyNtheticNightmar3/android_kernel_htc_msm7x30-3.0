@@ -24,13 +24,15 @@
 #include <linux/err.h>
 #include <linux/gpio.h>
 
+#include <mach/msm_panel.h>
 #include <asm/io.h>
 #include <asm/mach-types.h>
 #include <mach/msm_fb-7x30.h>
-#include <mach/msm_iomap-7x30.h>
+#include <mach/msm_iomap.h>
 #include <mach/vreg.h>
 #include <mach/panel_id.h>
 
+//#include "pmic.h"
 #include "../board-glacier.h"
 #include "../devices.h"
 #include "../proc_comm.h"
@@ -40,72 +42,71 @@
 #else
 #define B(s...) do {} while(0)
 #endif
+#define DEFAULT_BRIGHTNESS 100
+extern int panel_type;
 
-struct vreg {
-        const char *name;
-        unsigned id;
-};
+#define PANEL_GLACIER_SHARP		1
+#define PANEL_GLACIER_SONY		2
 
-struct vreg *V_LCMIO_1V8;
-struct vreg *V_LCMIO_2V8;
-struct vreg *OJ_2V85;
+#define GLACIER_BR_DEF_USER_PWM		143
+#define GLACIER_BR_MIN_USER_PWM		30
+#define GLACIER_BR_MAX_USER_PWM		255
+#define GLACIER_BR_DEF_SONY_PANEL_PWM		135
+#define GLACIER_BR_MIN_SONY_PANEL_PWM		9
+#define GLACIER_BR_MAX_SONY_PANEL_PWM		255
 
 static struct clk *axi_clk;
 
-#define PWM_USER_DEF	 		143
-#define PWM_USER_MIN			30
-#define PWM_USER_DIM			20
-#define PWM_USER_MAX			255
-
-#define PWM_SHARP_DEF			103
-#define PWM_SHARP_MIN			11
-#define PWM_SHARP_MAX			218
-
-#define PWM_SONY_DEF			120
-#define PWM_SONY_MIN			13
-#define PWM_SONY_MAX			255
-
-#define DEFAULT_BRIGHTNESS 		255
-
+static struct vreg *V_LCMIO_1V8, *V_LCMIO_2V8, *OJ_2V85;
 static struct cabc_t {
 	struct led_classdev lcd_backlight;
 	struct msm_mddi_client_data *client_data;
 	struct mutex lock;
 	unsigned long status;
-	int last_shrink_br;
 } cabc;
 
 enum {
 	GATE_ON = 1 << 0,
+	CABC_STATE,
 };
 
-enum led_brightness brightness_value = DEFAULT_BRIGHTNESS;
+struct mddi_cmd {
+        unsigned char cmd;
+        unsigned delay;
+        unsigned char *vals;
+        unsigned len;
+};
+
+enum led_brightness glacier_brightness_value = DEFAULT_BRIGHTNESS;// multiple definition of `brightness_value' in board-glacier-panel.c
+
+static int glacier_shrink_pwm(int brightness)
+{
+	int level;
+	unsigned int min_pwm, def_pwm, max_pwm;
+
+	min_pwm = GLACIER_BR_MIN_SONY_PANEL_PWM;
+	def_pwm = GLACIER_BR_DEF_SONY_PANEL_PWM;
+	max_pwm = GLACIER_BR_MAX_SONY_PANEL_PWM;
+	if (brightness <= GLACIER_BR_DEF_USER_PWM) {
+		if (brightness <= GLACIER_BR_MIN_USER_PWM)
+			level = min_pwm;
+		else
+			level = (def_pwm - min_pwm) *
+				(brightness - GLACIER_BR_MIN_USER_PWM) /
+				(GLACIER_BR_DEF_USER_PWM - GLACIER_BR_MIN_USER_PWM) +
+				min_pwm;
+	} else {
+		level = (max_pwm - def_pwm) *
+		(brightness - GLACIER_BR_DEF_USER_PWM) /
+		(GLACIER_BR_MAX_USER_PWM - GLACIER_BR_DEF_USER_PWM) +
+		def_pwm;
+	}
+
+	return level;
+}
 
 /* use one flag to have better backlight on/off performance */
 static int glacier_set_dim = 1;
-
-static int glacier_shrink_pwm(int brightness, int user_def,
-		int user_min, int user_max, int panel_def,
-		int panel_min, int panel_max)
-{
-	if (brightness < user_min) {
-		return panel_min;
-	}
-
-	if (brightness > user_def) {
-		brightness = (panel_max - panel_def) *
-			(brightness - user_def) /
-			(user_max - user_def) +
-			panel_def;
-	} else {
-			brightness = (panel_def - panel_min) *
-			(brightness - user_min) /
-			(user_def - user_min) +
-			panel_min;
-	}
-
-        return brightness;
-}
 
 static void glacier_set_brightness(struct led_classdev *led_cdev,
 				enum led_brightness val)
@@ -113,30 +114,17 @@ static void glacier_set_brightness(struct led_classdev *led_cdev,
 	struct msm_mddi_client_data *client = cabc.client_data;
 	unsigned int shrink_br = val;
 
+	printk(KERN_DEBUG "set brightness = %d\n", val);
 	if (test_bit(GATE_ON, &cabc.status) == 0)
 		return;
+	shrink_br = glacier_shrink_pwm(val);
 
-	if(panel_type == PANEL_SONY)
-		shrink_br = glacier_shrink_pwm(val, PWM_USER_DEF,
-				PWM_USER_MIN, PWM_USER_MAX, PWM_SONY_DEF,
-				PWM_SONY_MIN, PWM_SONY_MAX);
-	else
-		shrink_br = glacier_shrink_pwm(val, PWM_USER_DEF,
-				PWM_USER_MIN, PWM_USER_MAX, PWM_SHARP_DEF,
-				PWM_SHARP_MIN, PWM_SHARP_MAX);
-
-	if (!client) {
+	if(!client) {
 		pr_info("null mddi client");
 		return;
 	}
 
-	if (cabc.last_shrink_br == shrink_br) {
-		pr_info("[BKL] identical shrink_br");
-		return;
-	}
-
 	mutex_lock(&cabc.lock);
-
 	if (glacier_set_dim == 1) {
 		client->remote_write(client, 0x2C, 0x5300);
 		/* we dont need set dim again */
@@ -145,28 +133,30 @@ static void glacier_set_brightness(struct led_classdev *led_cdev,
 	client->remote_write(client, 0x00, 0x5500);
 	client->remote_write(client, shrink_br, 0x5100);
 
-	/* Update the last brightness */
-	cabc.last_shrink_br = shrink_br;
-	brightness_value = val;
+	glacier_brightness_value = val;
 	mutex_unlock(&cabc.lock);
-
-	printk(KERN_INFO "set brightness to %d\n", shrink_br);
 }
 
 static enum led_brightness
 glacier_get_brightness(struct led_classdev *led_cdev)
 {
-	return brightness_value;
+#if 0
+	struct msm_mddi_client_data *client = cabc.client_data;
+	return client->remote_read(client, 0x5100);
+#else
+	return glacier_brightness_value;
+#endif
 }
 
 static void glacier_backlight_switch(int on)
 {
 	enum led_brightness val;
-	val = cabc.lcd_backlight.brightness;
 
 	if (on) {
 		printk(KERN_DEBUG "turn on backlight\n");
 		set_bit(GATE_ON, &cabc.status);
+		val = cabc.lcd_backlight.brightness;
+
 		/* LED core uses get_brightness for default value
 		 * If the physical layer is not ready, we should
 		 * not count on it */
@@ -177,19 +167,83 @@ static void glacier_backlight_switch(int on)
 		glacier_set_dim = 1;
 	} else {
 		clear_bit(GATE_ON, &cabc.status);
-		if (val != 0)
-			glacier_set_brightness(&cabc.lcd_backlight, 0);
-		cabc.last_shrink_br = 0;
+		glacier_set_brightness(&cabc.lcd_backlight, 0);
 	}
 }
+
+static int glacier_cabc_switch(int on)
+{
+	struct msm_mddi_client_data *client = cabc.client_data;
+
+	if (test_bit(CABC_STATE, &cabc.status) == on)
+               return 1;
+
+	if (on) {
+		printk(KERN_DEBUG "turn on CABC\n");
+		set_bit(CABC_STATE, &cabc.status);
+		mutex_lock(&cabc.lock);
+		client->remote_write(client, 0x01, 0x5500);
+		client->remote_write(client, 0x2C, 0x5300);
+		mutex_unlock(&cabc.lock);
+	} else {
+		printk(KERN_DEBUG "turn off CABC\n");
+		clear_bit(CABC_STATE, &cabc.status);
+		mutex_lock(&cabc.lock);
+		client->remote_write(client, 0x00, 0x5500);
+		client->remote_write(client, 0x2C, 0x5300);
+		mutex_unlock(&cabc.lock);
+	}
+	return 1;
+}
+
+
+static ssize_t
+auto_backlight_show(struct device *dev, struct device_attribute *attr, char *buf);
+static ssize_t
+auto_backlight_store(struct device *dev, struct device_attribute *attr,
+               const char *buf, size_t count);
+#define CABC_ATTR(name) __ATTR(name, 0644, auto_backlight_show, auto_backlight_store)
+
+
+static struct device_attribute auto_attr = CABC_ATTR(auto);
+static ssize_t
+auto_backlight_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	int i = 0;
+
+	i += scnprintf(buf + i, PAGE_SIZE - 1, "%d\n",
+				test_bit(CABC_STATE, &cabc.status));
+	return i;
+}
+
+static ssize_t
+auto_backlight_store(struct device *dev, struct device_attribute *attr,
+	const char *buf, size_t count)
+{
+	int rc;
+	unsigned long res;
+
+	rc = strict_strtoul(buf, 10, &res);
+	if (rc) {
+		printk(KERN_ERR "invalid parameter, %s %d\n", buf, rc);
+		count = -EINVAL;
+		goto err_out;
+	}
+
+	if (glacier_cabc_switch(!!res))
+		count = -EIO;
+
+err_out:
+	return count;
+}
+
 
 static int glacier_backlight_probe(struct platform_device *pdev)
 {
 	int err = -EIO;
-	B(KERN_DEBUG "%s(%d)\n", __func__, __LINE__);
 
+	B(KERN_DEBUG "%s(%d)\n", __func__, __LINE__);
 	mutex_init(&cabc.lock);
-	cabc.last_shrink_br = 0;
 	cabc.client_data = pdev->dev.platform_data;
 	cabc.lcd_backlight.name = "lcd-backlight";
 	cabc.lcd_backlight.brightness_set = glacier_set_brightness;
@@ -198,8 +252,14 @@ static int glacier_backlight_probe(struct platform_device *pdev)
 	if (err)
 		goto err_register_lcd_bl;
 
+	err = device_create_file(cabc.lcd_backlight.dev, &auto_attr);
+	if (err)
+		goto err_out;
+
 	return 0;
 
+err_out:
+	device_remove_file(&pdev->dev, &auto_attr);
 err_register_lcd_bl:
 	led_classdev_unregister(&cabc.lcd_backlight);
 	return err;
@@ -225,309 +285,210 @@ struct nov_regs {
 static struct nov_regs sharp_init_seq[] = {
 	{0x1100, 0x00},
 	{REG_WAIT, 120},
+	{0x89C3, 0x80},
+	{0x92C2, 0x08},
+	{0x0180, 0x14},
+	{0x0280, 0x11},
+	{0x0380, 0x33},
+	{0x0480, 0x63},
+	{0x0580, 0x63},
+	{0x0680, 0x63},
+	{0x0780, 0x00},
+	{0x0880, 0x44},
+	{0x0980, 0x54},
+	{0x0A80, 0x10},
+	{0x0B80, 0x55},
+	{0x0C80, 0x55},
+	{0x0D80, 0x30},
+	{0x0E80, 0x44},
+	{0x0F80, 0x54},
+	{0x1080, 0x30},
+	{0x1280, 0x77},
+	{0x1380, 0x21},
+	{0x1480, 0x0E},
+	{0x1580, 0xB7},
+	{0x1680, 0xEC},
+	{0x1780, 0x00},
+	{0x1880, 0x00},
+	{0x1980, 0x00},
+	{0x1C80, 0x00},
+	{0x1F80, 0x05},
+	{0x2480, 0x2B},
+	{0x2580, 0x2F},
+	{0x2680, 0x3D},
+	{0x2780, 0x48},
+	{0x2880, 0x1A},
+	{0x2980, 0x2E},
+	{0x2A80, 0x5F},
+	{0x2B80, 0x42},
+	{0x2D80, 0x20},
+	{0x2F80, 0x27},
+	{0x3080, 0x78},
+	{0x3180, 0x1A},
+	{0x3280, 0x40},
+	{0x3380, 0x55},
+	{0x3480, 0x5F},
+	{0x3580, 0x7B},
+	{0x3680, 0x92},
+	{0x3780, 0x42},
+	{0x3880, 0x3D},
+	{0x3980, 0x40},
+	{0x3A80, 0x4E},
+	{0x3B80, 0x5A},
+	{0x3D80, 0x19},
+	{0x3F80, 0x2E},
+	{0x4080, 0x5F},
+	{0x4180, 0x55},
+	{0x4280, 0x1F},
+	{0x4380, 0x26},
+	{0x4480, 0x8E},
+	{0x4580, 0x19},
+	{0x4680, 0x41},
+	{0x4780, 0x55},
+	{0x4880, 0x77},
+	{0x4980, 0x92},
+	{0x4A80, 0xA9},
+	{0x4B80, 0x59},
+	{0x4C80, 0x2B},
+	{0x4D80, 0x2F},
+	{0x4E80, 0x3D},
+	{0x4F80, 0x48},
+	{0x5080, 0x1A},
+	{0x5180, 0x2E},
+	{0x5280, 0x5F},
+	{0x5380, 0x42},
+	{0x5480, 0x20},
+	{0x5580, 0x27},
+	{0x5680, 0x78},
+	{0x5780, 0x1A},
+	{0x5880, 0x40},
+	{0x5980, 0x55},
+	{0x5A80, 0x5F},
+	{0x5B80, 0x7B},
+	{0x5C80, 0x92},
+	{0x5D80, 0x42},
+	{0x5E80, 0x3D},
+	{0x5F80, 0x40},
+	{0x6080, 0x4E},
+	{0x6180, 0x5A},
+	{0x6280, 0x19},
+	{0x6380, 0x2E},
+	{0x6480, 0x5F},
+	{0x6580, 0x55},
+	{0x6680, 0x1F},
+	{0x6780, 0x26},
+	{0x6880, 0x8E},
+	{0x6980, 0x19},
+	{0x6A80, 0x41},
+	{0x6B80, 0x55},
+	{0x6C80, 0x77},
+	{0x6D80, 0x92},
+	{0x6E80, 0xA9},
+	{0x6F80, 0x59},
+	{0x7080, 0x2B},
+	{0x7180, 0x2F},
+	{0x7280, 0x3D},
+	{0x7380, 0x48},
+	{0x7480, 0x1A},
+	{0x7580, 0x2E},
+	{0x7680, 0x5F},
+	{0x7780, 0x42},
+	{0x7880, 0x20},
+	{0x7980, 0x27},
+	{0x7A80, 0x78},
+	{0x7B80, 0x1A},
+	{0x7C80, 0x40},
+	{0x7D80, 0x55},
+	{0x7E80, 0x5F},
+	{0x7F80, 0x7B},
+	{0x8080, 0x92},
+	{0x8180, 0x42},
+	{0x8280, 0x3D},
+	{0x8380, 0x40},
+	{0x8480, 0x4E},
+	{0x8580, 0x5A},
+	{0x8680, 0x19},
+	{0x8780, 0x2E},
+	{0x8880, 0x5F},
+	{0x8980, 0x55},
+	{0x8A80, 0x1F},
+	{0x8B80, 0x26},
+	{0x8C80, 0x8E},
+	{0x8D80, 0x19},
+	{0x8E80, 0x41},
+	{0x8F80, 0x55},
+	{0x9080, 0x77},
+	{0x9180, 0x92},
+	{0x9280, 0xA9},
+	{0x9380, 0x59},
+	{0x9480, 0xB5},
+	{0x9580, 0x04},
+	{0x9680, 0x18},
+	{0x9780, 0xB0},
+	{0x9880, 0x20},
+	{0x9980, 0x28},
+	{0x9A80, 0x08},
+	{0x9B80, 0x04},
+	{0x9C80, 0x12},
+	{0x9D80, 0x00},
+	{0x9E80, 0x00},
+	{0x9F80, 0x12},
+	{0xA080, 0x00},
+	{0xA280, 0x00},
+	{0xA380, 0x3C},
+	{0xA480, 0x01},
+	{0xA580, 0xC0},
+	{0xA680, 0x01},
+	{0xA780, 0x00},
+	{0xA980, 0x00},
+	{0xAA80, 0x00},
+	{0xAB80, 0x70},
+	{0xE780, 0x11},
+	{0xE880, 0x11},
+	{0xED80, 0x0A},
+	{0xEE80, 0x80},
+	{0xF780, 0x0D},
+	{0x2900, 0x00},
 	{0x3500, 0x00},
-	{0x5100, 0x00},
-	{0x89C3, 0x0080},
-	{0x92C2, 0x0008},
-	{0x0180, 0x0014},
-	{0x0280, 0x0011},
-	{0x0380, 0x0033},
-	{0x0480, 0x0054},
-	{0x0580, 0x0054},
-	{0x0680, 0x0054},
-	{0x0780, 0x0000},
-	{0x0880, 0x0044},
-	{0x0980, 0x0034},
-	{0x0A80, 0x0010},
-	{0x0B80, 0x0055},
-	{0x0C80, 0x0055},
-	{0x0D80, 0x0030},
-	{0x0E80, 0x0044},
-	{0x0F80, 0x0054},
-	{0x1080, 0x0030},
-	{0x1280, 0x0077},
-	{0x1380, 0x0021},
-	{0x1480, 0x000E},
-	{0x1580, 0x0098},
-	{0x1680, 0x00CC},
-	{0x1780, 0x0000},
-	{0x1880, 0x0000},
-	{0x1980, 0x0000},
-	{0x1C80, 0x0000},
-	{0x1F80, 0x0005},
-	{0x2480, 0x001A},
-	{0x2580, 0x001F},
-	{0x2680, 0x002D},
-	{0x2780, 0x003E},
-	{0x2880, 0x000D},
-	{0x2980, 0x0021},
-	{0x2A80, 0x0058},
-	{0x2B80, 0x002A},
-	{0x2D80, 0x0020},
-	{0x2F80, 0x0027},
-	{0x3080, 0x0061},
-	{0x3180, 0x0017},
-	{0x3280, 0x0037},
-	{0x3380, 0x0053},
-	{0x3480, 0x005A},
-	{0x3580, 0x008E},
-	{0x3680, 0x00A7},
-	{0x3780, 0x003E},
-	{0x3880, 0x002B},
-	{0x3980, 0x002E},
-	{0x3A80, 0x0036},
-	{0x3B80, 0x0041},
-	{0x3D80, 0x001A},
-	{0x3F80, 0x002D},
-	{0x4080, 0x005D},
-	{0x4180, 0x003D},
-	{0x4280, 0x0020},
-	{0x4380, 0x0027},
-	{0x4480, 0x0076},
-	{0x4580, 0x0017},
-	{0x4680, 0x0039},
-	{0x4780, 0x0055},
-	{0x4880, 0x0071},
-	{0x4980, 0x00A6},
-	{0x4A80, 0x00BF},
-	{0x4B80, 0x0055},
-	{0x4C80, 0x0055},
-	{0x4D80, 0x0058},
-	{0x4E80, 0x005F},
-	{0x4F80, 0x0066},
-	{0x5080, 0x0018},
-	{0x5180, 0x0026},
-	{0x5280, 0x0057},
-	{0x5380, 0x003D},
-	{0x5480, 0x001E},
-	{0x5580, 0x0026},
-	{0x5680, 0x006B},
-	{0x5780, 0x0017},
-	{0x5880, 0x003B},
-	{0x5980, 0x004F},
-	{0x5A80, 0x005A},
-	{0x5B80, 0x008E},
-	{0x5C80, 0x00A7},
-	{0x5D80, 0x003E},
-	{0x5E80, 0x0066},
-	{0x5F80, 0x0068},
-	{0x6080, 0x006C},
-	{0x6180, 0x006E},
-	{0x6280, 0x0016},
-	{0x6380, 0x002A},
-	{0x6480, 0x0059},
-	{0x6580, 0x004C},
-	{0x6680, 0x001E},
-	{0x6780, 0x0025},
-	{0x6880, 0x007B},
-	{0x6980, 0x0017},
-	{0x6A80, 0x003A},
-	{0x6B80, 0x0053},
-	{0x6C80, 0x0071},
-	{0x6D80, 0x00A6},
-	{0x6E80, 0x00BF},
-	{0x6F80, 0x0055},
-	{0x7080, 0x0063},
-	{0x7180, 0x0066},
-	{0x7280, 0x0070},
-	{0x7380, 0x0076},
-	{0x7480, 0x0018},
-	{0x7580, 0x0027},
-	{0x7680, 0x0058},
-	{0x7780, 0x0047},
-	{0x7880, 0x001E},
-	{0x7980, 0x0025},
-	{0x7A80, 0x0072},
-	{0x7B80, 0x0018},
-	{0x7C80, 0x003B},
-	{0x7D80, 0x004C},
-	{0x7E80, 0x005A},
-	{0x7F80, 0x008E},
-	{0x8080, 0x00A7},
-	{0x8180, 0x003E},
-	{0x8280, 0x0075},
-	{0x8380, 0x0077},
-	{0x8480, 0x007C},
-	{0x8580, 0x007E},
-	{0x8680, 0x0016},
-	{0x8780, 0x002C},
-	{0x8880, 0x005C},
-	{0x8980, 0x0055},
-	{0x8A80, 0x001F},
-	{0x8B80, 0x0024},
-	{0x8C80, 0x0082},
-	{0x8D80, 0x0015},
-	{0x8E80, 0x0038},
-	{0x8F80, 0x0050},
-	{0x9080, 0x0071},
-	{0x9180, 0x00A6},
-	{0x9280, 0x00BF},
-	{0x9380, 0x0055},
-	{0x9480, 0x00B5},
-	{0x9580, 0x0004},
-	{0x9680, 0x0018},
-	{0x9780, 0x00B0},
-	{0x9880, 0x0020},
-	{0x9980, 0x0028},
-	{0x9A80, 0x0008},
-	{0x9B80, 0x0004},
-	{0x9C80, 0x0012},
-	{0x9D80, 0x0000},
-	{0x9E80, 0x0000},
-	{0x9F80, 0x0012},
-	{0xA080, 0x0000},
-	{0xA280, 0x0000},
-	{0xA380, 0x003C},
-	{0xA480, 0x0001},
-	{0xA580, 0x00C0},
-	{0xA680, 0x0001},
-	{0xA780, 0x0000},
-	{0xA980, 0x0000},
-	{0xAA80, 0x0000},
-	{0xAB80, 0x0070},
-	{0xE780, 0x0011},
-	{0xE880, 0x0011},
-	{0xED80, 0x000A},
-	{0xEE80, 0x0080},
-	{0xF780, 0x000D},
-	{0x2900, 0x0000},
-	{0x4400, 0x0001},
-	{0x4401, 0x002b},
-	{0x0480, 0x0063},
-	{0x22c0, 0x0006},
+	{0x4400, 0x02},
+	{0x4401, 0x58},
 };
-
 static struct nov_regs sony_init_seq[] = {
 	{0x1100, 0x00},
 	{REG_WAIT, 120},
-	{0x3500, 0x0000},
-	{0x3600, 0xD0},
-	{0x5100, 0x00},
-	{0x2480, 0x0069},
-	{0x2580, 0x006C},
-	{0x2680, 0x0074},
-	{0x2780, 0x007C},
-	{0x2880, 0x0016},
-	{0x2980, 0x0029},
-	{0x2A80, 0x005A},
-	{0x2B80, 0x0072},
-	{0x2D80, 0x001D},
-	{0x2F80, 0x0024},
-	{0x3080, 0x00B6},
-	{0x3180, 0x001A},
-	{0x3280, 0x0044},
-	{0x3380, 0x005B},
-	{0x3480, 0x00C9},
-	{0x3580, 0x00F1},
-	{0x3680, 0x00FD},
-	{0x3780, 0x007F},
-	{0x3880, 0x0069},
-	{0x3980, 0x006C},
-	{0x3A80, 0x0074},
-	{0x3B80, 0x007C},
-	{0x3D80, 0x0016},
-	{0x3F80, 0x0029},
-	{0x4080, 0x005A},
-	{0x4180, 0x0072},
-	{0x4280, 0x001D},
-	{0x4380, 0x0024},
-	{0x4480, 0x00B6},
-	{0x4580, 0x001A},
-	{0x4680, 0x0044},
-	{0x4780, 0x005B},
-	{0x4880, 0x00C9},
-	{0x4980, 0x00F1},
-	{0x4A80, 0x00FD},
-	{0x4B80, 0x007F},
-	{0x4C80, 0x004F},
-	{0x4D80, 0x0053},
-	{0x4E80, 0x0060},
-	{0x4F80, 0x006A},
-	{0x5080, 0x0016},
-	{0x5180, 0x0029},
-	{0x5280, 0x005B},
-	{0x5380, 0x006C},
-	{0x5480, 0x001E},
-	{0x5580, 0x0025},
-	{0x5680, 0x00B3},
-	{0x5780, 0x001C},
-	{0x5880, 0x004A},
-	{0x5980, 0x0061},
-	{0x5A80, 0x00B6},
-	{0x5B80, 0x00C6},
-	{0x5C80, 0x00F6},
-	{0x5D80, 0x007F},
-	{0x5E80, 0x004F},
-	{0x5F80, 0x0053},
-	{0x6080, 0x0060},
-	{0x6180, 0x006A},
-	{0x6280, 0x0016},
-	{0x6380, 0x0029},
-	{0x6480, 0x005B},
-	{0x6580, 0x006C},
-	{0x6680, 0x001E},
-	{0x6780, 0x0025},
-	{0x6880, 0x00B3},
-	{0x6980, 0x001C},
-	{0x6A80, 0x004A},
-	{0x6B80, 0x0061},
-	{0x6C80, 0x00B6},
-	{0x6D80, 0x00C6},
-	{0x6E80, 0x00F6},
-	{0x6F80, 0x007F},
-	{0x7080, 0x0000},
-	{0x7180, 0x000A},
-	{0x7280, 0x0027},
-	{0x7380, 0x003C},
-	{0x7480, 0x001D},
-	{0x7580, 0x0030},
-	{0x7680, 0x0060},
-	{0x7780, 0x0063},
-	{0x7880, 0x0020},
-	{0x7980, 0x0026},
-	{0x7A80, 0x00B2},
-	{0x7B80, 0x001C},
-	{0x7C80, 0x0049},
-	{0x7D80, 0x0060},
-	{0x7E80, 0x00B9},
-	{0x7F80, 0x00D1},
-	{0x8080, 0x00FB},
-	{0x8180, 0x007F},
-	{0x8280, 0x0000},
-	{0x8380, 0x000A},
-	{0x8480, 0x0027},
-	{0x8580, 0x003C},
-	{0x8680, 0x001D},
-	{0x8780, 0x0030},
-	{0x8880, 0x0060},
-	{0x8980, 0x0063},
-	{0x8A80, 0x0020},
-	{0x8B80, 0x0026},
-	{0x8C80, 0x00B2},
-	{0x8D80, 0x001C},
-	{0x8E80, 0x0049},
-	{0x8F80, 0x0060},
-	{0x9080, 0x00B9},
-	{0x9180, 0x00D1},
-	{0x9280, 0x00FB},
-	{0x9380, 0x007F},
-	{0x2900, 0x0000},
-	{0x22c0, 0x0006},
-	{0x4400, 0x0002},
-	{0x4401, 0x0058},
-	{0x0480, 0x0063},
+	{0x0480, 0x63},
+	{0x0580, 0x63},
+	{0x0680, 0x63},
+	{0x5E00, 0x06},
+	{0x1DC0, 0x3F},
+	{0x1EC0, 0x40},
+	{0x3BC0, 0xF3},
+	{0x3DC0, 0xEF},
+	{0x3FC0, 0xEB},
+	{0x40C0, 0xE7},
+	{0x41C0, 0xE3},
+	{0x42C0, 0xDF},
+	{0x43C0, 0xDB},
+	{0x44C0, 0xD7},
+	{0x45C0, 0xD3},
+	{0x46C0, 0xCF},
+	{0x3500, 0x00},
+	{0x4400, 0x02},
+	{0x4401, 0x58},
+	{0x2900, 0x00},
 };
-
 
 static int
 glacier_mddi_init(struct msm_mddi_bridge_platform_data *bridge_data,
 		     struct msm_mddi_client_data *client_data)
 {
-	int i = 0, array_size;
+	int i = 0, array_size = 0;
 	unsigned reg, val;
-	struct nov_regs *init_seq;
+	struct nov_regs *init_seq= NULL;
+	B(KERN_DEBUG "%s\n", __func__);
+	client_data->auto_hibernate(client_data, 0);
 
-	if (panel_type == PANEL_SONY) {
+	if (panel_type == PANEL_GLACIER_SONY) {
 		init_seq = sony_init_seq;
 		array_size = ARRAY_SIZE(sony_init_seq);
 	} else {
@@ -539,14 +500,16 @@ glacier_mddi_init(struct msm_mddi_bridge_platform_data *bridge_data,
 		reg = cpu_to_le32(init_seq[i].reg);
 		val = cpu_to_le32(init_seq[i].val);
 		if (reg == REG_WAIT)
-			msleep(val);
+			hr_msleep(val);
 		else {
 			client_data->remote_write(client_data, val, reg);
 			if (reg == 0x1100)
 				client_data->send_powerdown(client_data);
 		}
 	}
-	if(axi_clk)
+	client_data->auto_hibernate(client_data, 1);
+
+	if (axi_clk)
 		clk_set_rate(axi_clk, 0);
 
 	return 0;
@@ -567,11 +530,10 @@ glacier_panel_blank(struct msm_mddi_bridge_platform_data *bridge_data,
 	B(KERN_DEBUG "%s(%d)\n", __func__, __LINE__);
 	client_data->auto_hibernate(client_data, 0);
 
-	client_data->remote_write(client_data, 0, 0x2800);
-	client_data->remote_write(client_data, 0x24, 0x5300);
+	client_data->remote_write(client_data, 0x0, 0x5300);
 	glacier_backlight_switch(LED_OFF);
+	client_data->remote_write(client_data, 0, 0x2800);
 	client_data->remote_write(client_data, 0, 0x1000);
-
 	client_data->auto_hibernate(client_data, 1);
 	return 0;
 }
@@ -580,20 +542,17 @@ static int
 glacier_panel_unblank(struct msm_mddi_bridge_platform_data *bridge_data,
 			struct msm_mddi_client_data *client_data)
 {
-	B(KERN_DEBUG "%s +\n", __func__);
+	B(KERN_DEBUG "%s(%d)\n", __func__, __LINE__);
 	client_data->auto_hibernate(client_data, 0);
 
-	/* HTC, Add 50 ms delay for stability of driver IC at high temperature */
-	hr_msleep(50);
-
 	if (panel_type == PANEL_SHARP) {
+		/* disable driver ic flip since sharp used mdp flip */
 		client_data->remote_write(client_data, 0x00, 0x3600);
-		client_data->remote_write(client_data, 0x24, 0x5300);
-	} else {
-		client_data->remote_write(client_data, 0x24, 0x5300);
 	}
-	glacier_backlight_switch(LED_FULL);
 
+	client_data->remote_write(client_data, 0x24, 0x5300);
+	hr_msleep(30);
+	glacier_backlight_switch(LED_FULL);
 	client_data->auto_hibernate(client_data, 1);
 	return 0;
 }
@@ -617,10 +576,12 @@ static struct msm_mddi_bridge_platform_data novatec_client_data = {
 };
 
 static void
-mddi_novatec_power(struct msm_mddi_client_data *client_data, int on)
+mddi_power(struct msm_mddi_client_data *client_data, int on)
 {
 	int rc;
-	unsigned config;	
+	unsigned config;
+	B(KERN_DEBUG "%s(%d)\n", __func__, __LINE__);
+
 	if (on) {
 		if(axi_clk)
 			clk_set_rate(axi_clk, 192000000);
@@ -637,7 +598,10 @@ mddi_novatec_power(struct msm_mddi_client_data *client_data, int on)
 		/* OJ_2V85*/
 		vreg_enable(OJ_2V85);
 		vreg_enable(V_LCMIO_2V8);
+		hr_msleep(3);
 		vreg_enable(V_LCMIO_1V8);
+		hr_msleep(5);
+
 		gpio_set_value(GLACIER_LCD_RSTz, 1);
 		hr_msleep(1);
 		gpio_set_value(GLACIER_LCD_RSTz, 0);
@@ -646,34 +610,41 @@ mddi_novatec_power(struct msm_mddi_client_data *client_data, int on)
 		hr_msleep(15);
 
 	} else {
+
+		hr_msleep(80);
 		gpio_set_value(GLACIER_LCD_RSTz, 0);
 		hr_msleep(10);
-		vreg_disable(V_LCMIO_2V8);
 		vreg_disable(V_LCMIO_1V8);
+		vreg_disable(V_LCMIO_2V8);
 		/* OJ_2V85*/
 		vreg_disable(OJ_2V85);
+	}
 
 		config = PCOM_GPIO_CFG(GLACIER_MDDI_TE, 0, GPIO_OUTPUT, GPIO_PULL_DOWN, GPIO_2MA);
 		rc = msm_proc_comm(PCOM_RPC_GPIO_TLMM_CONFIG_EX, &config, 0);
-		config = PCOM_GPIO_CFG(GLACIER_LCD_ID2, 0, GPIO_OUTPUT, GPIO_PULL_DOWN, GPIO_2MA);
+		config = PCOM_GPIO_CFG(GLACIER_LCD_ID2, 0, GPIO_INPUT, GPIO_PULL_DOWN, GPIO_2MA);
 		rc = msm_proc_comm(PCOM_RPC_GPIO_TLMM_CONFIG_EX, &config, 0);
-		config = PCOM_GPIO_CFG(GLACIER_LCD_ID1, 0, GPIO_OUTPUT, GPIO_PULL_DOWN, GPIO_2MA);
+		config = PCOM_GPIO_CFG(GLACIER_LCD_ID1, 0, GPIO_INPUT, GPIO_PULL_DOWN, GPIO_2MA);
 		rc = msm_proc_comm(PCOM_RPC_GPIO_TLMM_CONFIG_EX, &config, 0);
-		config = PCOM_GPIO_CFG(GLACIER_LCD_ID0, 0, GPIO_OUTPUT, GPIO_PULL_DOWN, GPIO_2MA);
+		config = PCOM_GPIO_CFG(GLACIER_LCD_ID0, 0, GPIO_INPUT, GPIO_PULL_DOWN, GPIO_2MA);
 		rc = msm_proc_comm(PCOM_RPC_GPIO_TLMM_CONFIG_EX, &config, 0);
+}
+
+static void mddi_fixup(uint16_t *mfr_name, uint16_t *product_code)
+{
+	printk(KERN_INFO "mddi fixup\n");
+	if (panel_type == PANEL_GLACIER_SONY) {
+		*mfr_name = 0xb9f6;
+		*product_code = 0x5560;
+	} else {
+		*mfr_name = 0xb9f6;
+		*product_code = 0x1408;
 	}
 }
 
-static void panel_nov_fixup(uint16_t *mfr_name, uint16_t *product_code)
-{
-	printk("mddi fixup\n");
-	*mfr_name = 0xb9f6;
-	*product_code = 0x5560;
-}
-
 static struct msm_mddi_platform_data mddi_pdata = {
-	.fixup = panel_nov_fixup,
-	.power_client = mddi_novatec_power,
+	.fixup = mddi_fixup,
+	.power_client = mddi_power,
 	.fb_resource = resources_msm_fb,
 	.num_clients = 2,
 	.client_platform_data = {
@@ -703,32 +674,34 @@ static struct platform_driver glacier_backlight_driver = {
 };
 
 static struct msm_mdp_platform_data mdp_pdata_sharp = {
+#ifdef CONFIG_MDP4_HW_VSYNC
+	.xres = 480,
+	.yres = 800,
+	.back_porch = 20,
+	.front_porch = 20,
+	.pulse_width = 40,
+#else
 #ifdef CONFIG_OVERLAY_FORCE_UPDATE
 	.overrides = MSM_MDP_PANEL_ROT_180 | MSM_MDP_FORCE_UPDATE,
 #else
 	.overrides = MSM_MDP_PANEL_ROT_180,
 #endif
-#ifdef CONFIG_MDP4_HW_VSYNC
-       .xres = 480,
-       .yres = 800,
-       .back_porch = 20,
-       .front_porch = 20,
-       .pulse_width = 40,
 #endif
 };
 
-static struct msm_mdp_platform_data mdp_pdata_common = {
+static struct msm_mdp_platform_data mdp_pdata_sony = {
+#ifdef CONFIG_MDP4_HW_VSYNC
+	.xres = 480,
+	.yres = 800,
+	.back_porch = 4,
+	.front_porch = 2,
+	.pulse_width = 4,
+#else
 #ifdef CONFIG_OVERLAY_FORCE_UPDATE
 	.overrides = MSM_MDP4_MDDI_DMA_SWITCH | MSM_MDP_FORCE_UPDATE,
 #else
 	.overrides = MSM_MDP4_MDDI_DMA_SWITCH,
 #endif
-#ifdef CONFIG_MDP4_HW_VSYNC
-       .xres = 480,
-       .yres = 800,
-       .back_porch = 4,
-       .front_porch = 2,
-       .pulse_width = 4,
 #endif
 };
 
@@ -736,7 +709,7 @@ int __init glacier_init_panel(void)
 {
 	int rc;
 
-	B(KERN_INFO "%s: enter. panel type %d\n", __func__, panel_type);
+	B(KERN_INFO "%s(%d): enter. panel_type 0x%08x\n", __func__, __LINE__, panel_type);
 
 	/* turn on OJ_2V85 for OJ. Note: must before V_LCMIO_1V8 */
 	OJ_2V85 = vreg_get(NULL, "gp9");
@@ -745,7 +718,7 @@ int __init glacier_init_panel(void)
 	V_LCMIO_1V8 = vreg_get(NULL, "wlan2");
 
 	if (IS_ERR(V_LCMIO_1V8)) {
-		pr_err("%s: wlan2 vreg get failed (%ld)\n",
+		pr_err("%s: LCMIO_1V8 get failed (%ld)\n",
 		       __func__, PTR_ERR(V_LCMIO_1V8));
 		return -1;
 	}
@@ -753,7 +726,7 @@ int __init glacier_init_panel(void)
 	V_LCMIO_2V8 = vreg_get(NULL, "gp13");
 
 	if (IS_ERR(V_LCMIO_2V8)) {
-		pr_err("%s: gp13 vreg get failed (%ld)\n",
+		pr_err("%s: LCMIO_2V8 get failed (%ld)\n",
 			__func__, PTR_ERR(V_LCMIO_2V8));
 		return -1;
 	}
@@ -761,12 +734,13 @@ int __init glacier_init_panel(void)
 	if (panel_type == PANEL_SHARP)
 		msm_device_mdp.dev.platform_data = &mdp_pdata_sharp;
 	else
-		msm_device_mdp.dev.platform_data = &mdp_pdata_common;
+		msm_device_mdp.dev.platform_data = &mdp_pdata_sony;
+
 	rc = platform_device_register(&msm_device_mdp);
 	if (rc)
 		return rc;
 
-	mddi_pdata.clk_rate = 384000000;
+		mddi_pdata.clk_rate = 384000000;
 
 	mddi_pdata.type = MSM_MDP_MDDI_TYPE_II;
 
