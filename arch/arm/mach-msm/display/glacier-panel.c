@@ -545,7 +545,7 @@ glacier_panel_unblank(struct msm_mddi_bridge_platform_data *bridge_data,
 	B(KERN_DEBUG "%s(%d)\n", __func__, __LINE__);
 	client_data->auto_hibernate(client_data, 0);
 
-	if (panel_type == PANEL_SHARP) {
+	if (panel_type == PANEL_GLACIER_SHARP) {
 		/* disable driver ic flip since sharp used mdp flip */
 		client_data->remote_write(client_data, 0x00, 0x3600);
 	}
@@ -731,7 +731,7 @@ int __init glacier_init_panel(void)
 		return -1;
 	}
 
-	if (panel_type == PANEL_SHARP)
+	if (panel_type == PANEL_GLACIER_SHARP)
 		msm_device_mdp.dev.platform_data = &mdp_pdata_sharp;
 	else
 		msm_device_mdp.dev.platform_data = &mdp_pdata_sony;
