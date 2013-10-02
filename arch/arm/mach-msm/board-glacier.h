@@ -73,11 +73,6 @@
 
 #define GLACIER_GPIO_PS_HOLD	(29)
 
-/* Panels */
-#define PANEL_OBSOLATE_0		0
-#define PANEL_SHARP			1
-#define PANEL_SONY			2
-
 /* LCD */
 #define GLACIER_MDDI_TE            (22)
 #define GLACIER_LCD_RSTz		(162)
