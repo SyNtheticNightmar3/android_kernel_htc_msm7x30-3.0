@@ -783,9 +783,9 @@ static struct msm_mdp_platform_data mdp_pdata_sharp = {
 #ifdef CONFIG_MDP4_HW_VSYNC
 	.xres = 480,
 	.yres = 800,
-	.back_porch = 20,
-	.front_porch = 20,
-	.pulse_width = 40,
+	.back_porch = 2,
+	.front_porch = 42,
+	.pulse_width = 2,
 #else
 #ifdef CONFIG_OVERLAY_FORCE_UPDATE
 	.overrides = MSM_MDP_PANEL_ROT_180 | MSM_MDP_FORCE_UPDATE,
