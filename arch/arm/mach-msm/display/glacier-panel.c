@@ -620,6 +620,10 @@ glacier_mddi_uninit(struct msm_mddi_bridge_platform_data *bridge_data,
 			struct msm_mddi_client_data *client_data)
 {
 	B(KERN_DEBUG "%s(%d)\n", __func__, __LINE__);
+	client_data->auto_hibernate(client_data, 0);
+	client_data->remote_write(client_data, 0, 0x2800);
+	client_data->remote_write(client_data, 0, 0x1000);
+	client_data->auto_hibernate(client_data, 1);
 	return 0;
 }
 
@@ -628,13 +632,8 @@ glacier_panel_blank(struct msm_mddi_bridge_platform_data *bridge_data,
 			struct msm_mddi_client_data *client_data)
 {
 	B(KERN_DEBUG "%s(%d)\n", __func__, __LINE__);
-	client_data->auto_hibernate(client_data, 0);
-
-	client_data->remote_write(client_data, 0x0, 0x5300);
+	client_data->remote_write(client_data, 0x24, 0x5300);
 	glacier_backlight_switch(LED_OFF);
-	client_data->remote_write(client_data, 0, 0x2800);
-	client_data->remote_write(client_data, 0, 0x1000);
-	client_data->auto_hibernate(client_data, 1);
 	return 0;
 }
 
@@ -684,47 +683,36 @@ mddi_power(struct msm_mddi_client_data *client_data, int on)
 
 		config = PCOM_GPIO_CFG(GLACIER_MDDI_TE, 1, GPIO_INPUT, GPIO_PULL_DOWN, GPIO_2MA);
 		rc = msm_proc_comm(PCOM_RPC_GPIO_TLMM_CONFIG_EX, &config, 0);
-		config = PCOM_GPIO_CFG(GLACIER_LCD_ID2, 0, GPIO_INPUT, GPIO_NO_PULL, GPIO_2MA);
-		rc = msm_proc_comm(PCOM_RPC_GPIO_TLMM_CONFIG_EX, &config, 0);
 		config = PCOM_GPIO_CFG(GLACIER_LCD_ID1, 0, GPIO_INPUT, GPIO_NO_PULL, GPIO_2MA);
 		rc = msm_proc_comm(PCOM_RPC_GPIO_TLMM_CONFIG_EX, &config, 0);
 		config = PCOM_GPIO_CFG(GLACIER_LCD_ID0, 0, GPIO_INPUT, GPIO_NO_PULL, GPIO_2MA);
 		rc = msm_proc_comm(PCOM_RPC_GPIO_TLMM_CONFIG_EX, &config, 0);
 
-		vreg_enable(V_LCMIO_2V8);
-		hr_msleep(5);
-		vreg_disable(V_LCMIO_2V8);
-		hr_msleep(55);
-		gpio_set_value(GLACIER_MDDI_TE, 1);
 		/* OJ_2V85*/
 		vreg_enable(OJ_2V85);
 		hr_msleep(1);
 		vreg_enable(V_LCMIO_2V8);
 		hr_msleep(2);
 		vreg_enable(V_LCMIO_1V8);
-		hr_msleep(2);
+		hr_msleep(5);
 		gpio_set_value(GLACIER_LCD_RSTz, 1);
-		hr_msleep(2);
+		hr_msleep(1);
 		gpio_set_value(GLACIER_LCD_RSTz, 0);
-		hr_msleep(2);
+		hr_msleep(1);
 		gpio_set_value(GLACIER_LCD_RSTz, 1);
-		hr_msleep(65);
+		hr_msleep(15);
 
 	} else {
-		hr_msleep(130);
+		hr_msleep(80);
 		gpio_set_value(GLACIER_LCD_RSTz, 0);
-		hr_msleep(15);
+		hr_msleep(10);
 		vreg_disable(V_LCMIO_1V8);
-		hr_msleep(15);
 		vreg_disable(V_LCMIO_2V8);
 		/* OJ_2V85*/
 		vreg_disable(OJ_2V85);
-		gpio_set_value(GLACIER_MDDI_TE, 0);
 	}
 
 		config = PCOM_GPIO_CFG(GLACIER_MDDI_TE, 0, GPIO_OUTPUT, GPIO_PULL_DOWN, GPIO_2MA);
-		rc = msm_proc_comm(PCOM_RPC_GPIO_TLMM_CONFIG_EX, &config, 0);
-		config = PCOM_GPIO_CFG(GLACIER_LCD_ID2, 0, GPIO_INPUT, GPIO_PULL_DOWN, GPIO_2MA);
 		rc = msm_proc_comm(PCOM_RPC_GPIO_TLMM_CONFIG_EX, &config, 0);
 		config = PCOM_GPIO_CFG(GLACIER_LCD_ID1, 0, GPIO_INPUT, GPIO_PULL_DOWN, GPIO_2MA);
 		rc = msm_proc_comm(PCOM_RPC_GPIO_TLMM_CONFIG_EX, &config, 0);
@@ -842,7 +830,7 @@ int __init glacier_init_panel(void)
 	if (rc)
 		return rc;
 
-		mddi_pdata.clk_rate = 384000000;
+	mddi_pdata.clk_rate = 384000000;
 
 	mddi_pdata.type = MSM_MDP_MDDI_TYPE_II;
 
