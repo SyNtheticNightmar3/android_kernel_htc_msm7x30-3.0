@@ -644,8 +644,12 @@ glacier_panel_unblank(struct msm_mddi_bridge_platform_data *bridge_data,
 	B(KERN_DEBUG "%s(%d)\n", __func__, __LINE__);
 	client_data->auto_hibernate(client_data, 0);
 
+	if (panel_type == PANEL_GLACIER_SHARP) {
+		/* disable driver ic flip since sharp used mdp flip */
+		client_data->remote_write(client_data, 0x00, 0x3600);
+	}
+
 	client_data->remote_write(client_data, 0x24, 0x5300);
-	client_data->remote_write(client_data, 0x0A, 0x22C0);
 	hr_msleep(30);
 	glacier_backlight_switch(LED_FULL);
 	client_data->auto_hibernate(client_data, 1);
@@ -772,9 +776,9 @@ static struct msm_mdp_platform_data mdp_pdata_sharp = {
 	.pulse_width = 2,
 #else
 #ifdef CONFIG_OVERLAY_FORCE_UPDATE
-	.overrides = MSM_MDP4_MDDI_DMA_SWITCH | MSM_MDP_FORCE_UPDATE,
+	.overrides = MSM_MDP_PANEL_ROT_180 | MSM_MDP_FORCE_UPDATE,
 #else
-	.overrides = MSM_MDP4_MDDI_DMA_SWITCH,
+	.overrides = MSM_MDP_PANEL_ROT_180,
 #endif
 #endif
 };
