@@ -753,9 +753,9 @@ static struct msm_mdp_platform_data mdp_pdata_sharp = {
 #ifdef CONFIG_MDP4_HW_VSYNC
 	.xres = 480,
 	.yres = 800,
-	.back_porch = 2,
-	.front_porch = 42,
-	.pulse_width = 2,
+	.back_porch = 24,
+	.front_porch = 1,
+	.pulse_width = 3,
 #else
 #ifdef CONFIG_OVERLAY_FORCE_UPDATE
 	.overrides = MSM_MDP_PANEL_ROT_180 | MSM_MDP_FORCE_UPDATE,
@@ -769,9 +769,9 @@ static struct msm_mdp_platform_data mdp_pdata_sony = {
 #ifdef CONFIG_MDP4_HW_VSYNC
 	.xres = 480,
 	.yres = 800,
-	.back_porch = 4,
-	.front_porch = 2,
-	.pulse_width = 4,
+	.back_porch = 24,
+	.front_porch = 1,
+	.pulse_width = 3,
 #else
 #ifdef CONFIG_OVERLAY_FORCE_UPDATE
 	.overrides = MSM_MDP4_MDDI_DMA_SWITCH | MSM_MDP_FORCE_UPDATE,
