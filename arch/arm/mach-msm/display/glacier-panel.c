@@ -756,12 +756,11 @@ static struct msm_mdp_platform_data mdp_pdata_sharp = {
 	.back_porch = 24,
 	.front_porch = 1,
 	.pulse_width = 3,
-#else
+#endif
 #ifdef CONFIG_OVERLAY_FORCE_UPDATE
 	.overrides = MSM_MDP_PANEL_ROT_180 | MSM_MDP_FORCE_UPDATE,
 #else
 	.overrides = MSM_MDP_PANEL_ROT_180,
-#endif
 #endif
 };
 
