@@ -714,13 +714,8 @@ mddi_power(struct msm_mddi_client_data *client_data, int on)
 static void mddi_fixup(uint16_t *mfr_name, uint16_t *product_code)
 {
 	printk(KERN_INFO "mddi fixup\n");
-	if (panel_type == PANEL_GLACIER_SONY) {
-		*mfr_name = 0xb9f6;
-		*product_code = 0x5560;
-	} else {
-		*mfr_name = 0xb9f6;
-		*product_code = 0x1408;
-	}
+	*mfr_name = 0xb9f6;
+	*product_code = 0x5560;
 }
 
 static struct msm_mddi_platform_data mddi_pdata = {
