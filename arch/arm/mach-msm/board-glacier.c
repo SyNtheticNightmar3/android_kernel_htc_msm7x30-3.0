@@ -331,7 +331,7 @@ static struct platform_device capella_cm3602 = {
 
 /* HTC_HEADSET_GPIO Driver */
 static struct htc_headset_gpio_platform_data htc_headset_gpio_data = {
-	.hpin_gpio		= PM8058_GPIO_PM_TO_SYS(GLACIER_AUD_HP_DETz),
+	.hpin_gpio		= 0,
 	.key_enable_gpio	= 0,
 	.mic_select_gpio	= GLACIER_AUD_MICPATH_SEL,
 };
@@ -364,8 +364,12 @@ static struct platform_device htc_headset_microp = {
 /* HTC_HEADSET_PMIC Driver */
 static struct htc_headset_pmic_platform_data htc_headset_pmic_data = {
 	.hpin_gpio	= PM8058_GPIO_PM_TO_SYS(GLACIER_AUD_HP_DETz),
-	.hpin_irq	= MSM_GPIO_TO_INT(
-PM8058_GPIO_PM_TO_SYS(GLACIER_AUD_HP_DETz)),
+	.hpin_irq		= 0,
+	.key_gpio		= 0,
+	.key_irq		= 0,
+	.key_enable_gpio	= 0,
+	.hs_controller		= 0,
+	.hs_switch		= 0,
 };
 
 static struct platform_device htc_headset_pmic = {
@@ -384,40 +388,10 @@ static struct platform_device *headset_devices[] = {
 	/* Please put the headset detection driver on the last */
 };
 
-static struct headset_adc_config htc_headset_mgr_config[] = {
-	{
-		.type = HEADSET_MIC,
-		.adc_max = 55426,
-		.adc_min = 38237,
-	},
-	{
-		.type = HEADSET_BEATS,
-		.adc_max = 38236,
-		.adc_min = 30586,
-	},
-	{
-		.type = HEADSET_BEATS_SOLO,
-		.adc_max = 30585,
-		.adc_min = 20292,
-	},
-	{
-		.type = HEADSET_NO_MIC, /* HEADSET_INDICATOR */
-		.adc_max = 20291,
-		.adc_min = 7285,
-	},
-	{
-		.type = HEADSET_NO_MIC,
-		.adc_max = 7284,
-		.adc_min = 0,
-	},
-};
-
 static struct htc_headset_mgr_platform_data htc_headset_mgr_data = {
-	.driver_flag		= 0,
+	.driver_flag		= DRIVER_HS_MGR_OLD_AJ,
 	.headset_devices_num	= ARRAY_SIZE(headset_devices),
 	.headset_devices	= headset_devices,
-	.headset_config_num	= ARRAY_SIZE(htc_headset_mgr_config),
-	.headset_config		= htc_headset_mgr_config,
 };
 
 static struct microp_function_config microp_functions[] = {
