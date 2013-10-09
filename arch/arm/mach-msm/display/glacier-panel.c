@@ -111,7 +111,7 @@ static void glacier_set_brightness(struct led_classdev *led_cdev,
 		return;
 	shrink_br = glacier_shrink_pwm(val);
 
-	if(!client) {
+	if (!client) {
 		pr_info("null mddi client");
 		return;
 	}
@@ -669,7 +669,7 @@ mddi_power(struct msm_mddi_client_data *client_data, int on)
 	B(KERN_DEBUG "%s(%d)\n", __func__, __LINE__);
 
 	if (on) {
-		if(axi_clk)
+		if (axi_clk)
 			clk_set_rate(axi_clk, 192000000);
 
 		config = PCOM_GPIO_CFG(GLACIER_MDDI_TE, 1, GPIO_INPUT, GPIO_PULL_DOWN, GPIO_2MA);
@@ -685,19 +685,20 @@ mddi_power(struct msm_mddi_client_data *client_data, int on)
 		vreg_enable(V_LCMIO_2V8);
 		hr_msleep(2);
 		vreg_enable(V_LCMIO_1V8);
-		hr_msleep(5);
+		hr_msleep(2);
 		gpio_set_value(GLACIER_LCD_RSTz, 1);
-		hr_msleep(1);
+		hr_msleep(2);
 		gpio_set_value(GLACIER_LCD_RSTz, 0);
-		hr_msleep(1);
+		hr_msleep(2);
 		gpio_set_value(GLACIER_LCD_RSTz, 1);
-		hr_msleep(15);
+		hr_msleep(65);
 
 	} else {
-		hr_msleep(80);
+		hr_msleep(130);
 		gpio_set_value(GLACIER_LCD_RSTz, 0);
-		hr_msleep(10);
+		hr_msleep(15);
 		vreg_disable(V_LCMIO_1V8);
+		hr_msleep(15);
 		vreg_disable(V_LCMIO_2V8);
 		/* OJ_2V85*/
 		vreg_disable(OJ_2V85);
