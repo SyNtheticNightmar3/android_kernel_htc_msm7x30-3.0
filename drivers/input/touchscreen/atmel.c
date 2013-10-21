@@ -60,6 +60,7 @@ struct atmel_ts_data {
 	struct work_struct check_delta_work;
 	struct delayed_work unlock_work;
 	uint8_t flag_htc_event;
+	uint8_t report_both;
 	int (*power) (int on);
 	uint8_t unlock_attr;
 	struct early_suspend early_suspend;
@@ -664,8 +665,8 @@ static ssize_t atmel_info_show(struct device *dev,
 	struct device_attribute *attr, char *buf)
 {
 	size_t count = 0;
-	count += sprintf(buf, "MTSize & new filter & INT thread \n");
-	count += sprintf(buf + count, "2012.02.15.\n");
+	count += sprintf(buf, "Both report & MTSize & new filter & INT thread \n");
+	count += sprintf(buf + count, "2012.02.29.\n");
 	return count;
 }
 
@@ -1083,17 +1084,30 @@ static void msg_process_multitouch(struct atmel_ts_data *ts, uint8_t *data, uint
 					idx + 1, ts->finger_data[idx].x, ts->finger_data[idx].y);
 			}
 			if (ts->id->version >= 0x20 && ts->pre_data[0] < RECALIB_DONE) {
-				if (ts->finger_count == 0 && !ts->pre_data[0] &&
-					(idx == 0 && ts->finger_data[idx].y > 750
-					&& ((ts->finger_data[idx].y - ts->pre_data[idx + 1]) > 135)))
-						restore_normal_threshold(ts);
-						confirm_calibration(ts, 1, 0);
-				if (ts->finger_count)
-					i2c_atmel_write_byte_data(ts->client,
-						get_object_address(ts, GEN_COMMANDPROCESSOR_T6) +
-						T6_CFG_CALIBRATE, 0x55);
-				else if (!ts->finger_count && ts->pre_data[0] == RECALIB_NG)
-					ts->pre_data[0] = RECALIB_NEED;
+				if (ts->finger_count == 0) {
+					if (ts->pre_data[0] == RECALIB_NEED &&
+						!ts->unlock_attr && idx == 0 &&
+						ts->finger_data[idx].y > 750 &&
+						ts->finger_data[idx].y - ts->pre_data[idx+1] > 135) {
+							restore_normal_threshold(ts);
+							confirm_calibration(ts, 1, 0);
+					} else if (ts->pre_data[0] == RECALIB_UNLOCK &&
+						ts->unlock_attr && idx == 0 &&
+						time_after(jiffies, ts->valid_press_timeout)) {
+						ts->valid_pressed_cnt++;
+						if (ts->valid_pressed_cnt > 2) {
+							cancel_delayed_work_sync(&ts->unlock_work);
+							if (ts->pre_data[0] == RECALIB_UNLOCK)
+								confirm_calibration(ts, 0, 1);
+						}
+					} else if (ts->pre_data[0] == RECALIB_NG)
+						ts->pre_data[0] = RECALIB_NEED;
+				} else {
+					if (ts->pre_data[0] < RECALIB_UNLOCK)
+						i2c_atmel_write_byte_data(ts->client,
+							get_object_address(ts, GEN_COMMANDPROCESSOR_T6) +
+							T6_CFG_CALIBRATE, 0x55);
+				}
 			}
 		}
 	} else if ((data[T9_MSG_STATUS] & (T9_MSG_STATUS_DETECT|T9_MSG_STATUS_PRESS)) &&
@@ -1120,13 +1134,18 @@ static void msg_process_multitouch(struct atmel_ts_data *ts, uint8_t *data, uint
 				ts->finger_count++;
 			ts->finger_pressed |= BIT(idx);
 			if (ts->id->version >= 0x20 && ts->pre_data[0] < RECALIB_DONE) {
-				ts->pre_data[idx + 1] = ts->finger_data[idx].y;
-				if (ts->finger_count == ts->finger_support)
-					i2c_atmel_write_byte_data(ts->client,
-						get_object_address(ts, GEN_COMMANDPROCESSOR_T6) +
-						T6_CFG_CALIBRATE, 0x55);
-				else if (!ts->pre_data[0] && ts->finger_count > 1)
-					ts->pre_data[0] = RECALIB_NG;
+				if (ts->pre_data[0] < RECALIB_UNLOCK) {
+					ts->pre_data[idx + 1] = ts->finger_data[idx].y;
+					if (ts->finger_count == ts->finger_support)
+						i2c_atmel_write_byte_data(ts->client,
+							get_object_address(ts, GEN_COMMANDPROCESSOR_T6) +
+							T6_CFG_CALIBRATE, 0x55);
+					else if (ts->finger_count > 1 &&
+						ts->pre_data[0] == RECALIB_NEED)
+						ts->pre_data[0] = RECALIB_NG;
+				} else if (ts->pre_data[0] == RECALIB_UNLOCK && ts->unlock_attr)
+					if (ts->finger_count > 1)
+						ts->valid_pressed_cnt = 0;
 			}
 		}
 	}
@@ -1216,12 +1235,21 @@ static void msg_process_noisesuppression(struct atmel_ts_data *ts, uint8_t *data
 	}
 }
 
-static void compatible_input_report(struct input_dev *idev,
+static void compatible_input_report(uint8_t report_both, struct input_dev *idev,
 				struct atmel_finger_data *fdata, uint8_t press, uint8_t last)
 {
-	if (!press)
+	if (!press) {
+		if (report_both == REPORT_BOTH_DATA) {
+			input_report_abs(idev, ABS_MT_AMPLITUDE, 0);
+			input_report_abs(idev, ABS_MT_POSITION, BIT(31));
+		}
 		input_mt_sync(idev);
-	else {
+	} else {
+		if (report_both == REPORT_BOTH_DATA) {
+			input_report_abs(idev, ABS_MT_AMPLITUDE, fdata->z << 16 | fdata->w);
+			input_report_abs(idev, ABS_MT_POSITION,
+				(last ? BIT(31) : 0) | fdata->x << 16 | fdata->y);
+		}
 		input_report_abs(idev, ABS_MT_PRESSURE, fdata->z);
 		input_report_abs(idev, ABS_MT_TOUCH_MAJOR, fdata->z);
 		input_report_abs(idev, ABS_MT_WIDTH_MAJOR, fdata->w);
@@ -1253,14 +1281,14 @@ static void multi_input_report(struct atmel_ts_data *ts)
 		if (ts->finger_pressed & BIT(loop_i)) {
 			if (ts->id->version >= 0x15) {
 				if (ts->flag_htc_event == 0) {
-					compatible_input_report(ts->input_dev, &ts->finger_data[loop_i],
+					compatible_input_report(ts->report_both, ts->input_dev, &ts->finger_data[loop_i],
 						1, (ts->finger_count == ++finger_report));
 				} else {
 					htc_input_report(ts->input_dev, &ts->finger_data[loop_i],
 						1, (ts->finger_count == ++finger_report));
 				}
 			} else {
-				compatible_input_report(ts->input_dev, &ts->finger_data[loop_i],
+				compatible_input_report(ts->report_both, ts->input_dev, &ts->finger_data[loop_i],
 					1, (ts->finger_count == ++finger_report));
 			}
 			//left -> right
@@ -1403,7 +1431,7 @@ static irqreturn_t atmel_irq_thread(int irq, void *ptr)
 			ts->finger_pressed = 0;
 			ts->finger_count = 0;
 			if (ts->flag_htc_event == 0)
-				compatible_input_report(ts->input_dev, NULL, 0, 1);
+				compatible_input_report(ts->report_both, ts->input_dev, NULL, 0, 1);
 			else
 				htc_input_report(ts->input_dev, NULL, 0, 1);
 
@@ -1428,7 +1456,7 @@ static irqreturn_t atmel_irq_thread(int irq, void *ptr)
 			msg_process_multitouch_legacy(ts, data, report_type);
 			if (!ts->finger_count) {
 				ts->finger_pressed = 0;
-				compatible_input_report(ts->input_dev, NULL, 0, 1);
+				compatible_input_report(ts->report_both, ts->input_dev, NULL, 0, 1);
 				if (ts->debug_log_level & 0x2)
 					printk(KERN_INFO "Finger leave\n");
 			} else {
@@ -2074,6 +2102,7 @@ static int atmel_ts_probe(struct i2c_client *client,
 			ts->ATCH_EXT = &pdata->config_T8[T8_CFG_ATCHCALST];
 		ts->filter_level = pdata->filter_level;
 		ts->unlock_attr = pdata->unlock_attr;
+		ts->report_both = pdata->report_both;
 
 #if !defined(CONFIG_ARCH_MSM8X60)
 		if (usb_get_connect_type())
