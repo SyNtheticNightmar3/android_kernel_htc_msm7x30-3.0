@@ -114,6 +114,9 @@ struct page {
 	 */
 	void *shadow;
 #endif
+#ifdef CONFIG_PKSM
+	void *pksm;
+#endif
 };
 
 typedef unsigned long __nocast vm_flags_t;
